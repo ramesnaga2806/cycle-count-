@@ -12,13 +12,10 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
     import {
-      getFirestore, collection, addDoc, getDocs, query, where, deleteDoc, doc, updateDoc
+      getFirestore, collection, addDoc, getDocs, query, where, deleteDoc, doc, updateDoc, onSnapshot
     } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
     import { getStorage, ref, uploadBytes } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 
-    // -----------------------------
-    // Config + state
-    // -----------------------------
     const firebaseConfig = {
       apiKey: "AIzaSyDBWFj82I9Rt1ZJygVZZahIdOOoETYteCc",
       authDomain: "cycle-count-a5f0d.firebaseapp.com",
@@ -31,38 +28,43 @@
     const db = getFirestore(app);
     const storage = getStorage(app);
 
-    let data = []; // local rows from uploaded Excel
+    let data = [];
     let currentIndex = 0;
     let showSystem = true;
     let supervisorMode = false;
-    const todayStr = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    const todayStr = new Date().toISOString().split("T")[0];
 
     // -----------------------------
-    // Utilities
+    // Firestore live listener
     // -----------------------------
-    function toDateString(value) {
-      // Accept Firestore Timestamp or string
-      try {
-        if (!value) return "";
-        if (value.toDate && typeof value.toDate === "function") {
-          return value.toDate().toISOString().split("T")[0];
-        }
-        return String(value);
-      } catch (e) {
-        return String(value);
-      }
+    function setupLiveListener() {
+      const q = query(collection(db, "cycle_counts"), where("date", "==", todayStr));
+      onSnapshot(q, snapshot => {
+        data = [];
+        snapshot.forEach(docSnap => {
+          const d = docSnap.data();
+          d.id = docSnap.id;
+          data.push(d);
+        });
+        renderCurrent();
+        fetchDates();
+      });
     }
 
-    // -----------------------------
-    // Fetch & show available dates
-    // -----------------------------
+    function toDateString(value) {
+      try {
+        if (!value) return "";
+        if (value.toDate && typeof value.toDate === "function") return value.toDate().toISOString().split("T")[0];
+        return String(value);
+      } catch { return String(value); }
+    }
+
     async function fetchDates() {
       try {
         const snapshot = await getDocs(collection(db, "cycle_counts"));
         const dates = new Set();
         snapshot.forEach(docSnap => {
-          const d = docSnap.data();
-          const ds = toDateString(d.date);
+          const ds = toDateString(docSnap.data().date);
           if (ds) dates.add(ds);
         });
         const list = document.getElementById("datesList");
@@ -71,7 +73,6 @@
           const li = document.createElement("li");
           li.className = "list-group-item d-flex justify-content-between align-items-center";
           li.textContent = date;
-          // show Clear by date only when supervisor logged
           if (supervisorMode) {
             const btn = document.createElement("button");
             btn.className = "btn btn-sm btn-danger ms-2";
@@ -81,31 +82,22 @@
           }
           list.appendChild(li);
         });
-      } catch (err) {
-        console.error("fetchDates error:", err);
-      }
+      } catch (err) { console.error(err); }
     }
 
-    // -----------------------------
-    // Read Excel and insert initial docs
-    // -----------------------------
-    function readExcel(file) {
+    async function readExcel(file) {
       document.getElementById("fileName").textContent = "Selected File: " + file.name;
       const reader = new FileReader();
       reader.onload = async (evt) => {
         try {
-          // use array buffer for reliability
           const wb = XLSX.read(evt.target.result, { type: "array" });
           const ws = wb.Sheets[wb.SheetNames[0]];
-          // expecting header row in Excel: location | sku | system_quantity
-          data = XLSX.utils.sheet_to_json(ws, {
+          const rows = XLSX.utils.sheet_to_json(ws, {
             header: ["location", "sku", "system_quantity"],
-            range: 1, // skip header row
-          }).filter(r => r.location || r.sku); // drop empty rows
-          currentIndex = 0;
+            range: 1,
+          }).filter(r => r.location || r.sku);
 
-          // Upload initial rows to Firestore (date as string)
-          for (const entry of data) {
+          for (const entry of rows) {
             await addDoc(collection(db, "cycle_counts"), {
               date: todayStr,
               location: entry.location || "",
@@ -115,18 +107,11 @@
               variance: null
             });
           }
-
-          renderCurrent();
-          await fetchDates();
-          alert("File processed and initial records uploaded.");
+          alert("File uploaded and records added.");
         } catch (err) {
-          console.error("readExcel error:", err);
-          alert("Error processing Excel file. See console.");
+          console.error(err);
+          alert("Error reading Excel.");
         }
-      };
-      reader.onerror = (e) => {
-        console.error("FileReader error:", e);
-        alert("File read error.");
       };
       reader.readAsArrayBuffer(file);
     }
@@ -135,188 +120,92 @@
       try {
         const storageRef = ref(storage, "uploads/" + file.name);
         await uploadBytes(storageRef, file);
-        console.log("File uploaded to Firebase Storage");
-      } catch (e) {
-        console.warn("Upload to storage failed (continuing):", e);
-      }
+        console.log("File uploaded to Storage");
+      } catch (e) { console.warn("Storage upload failed:", e); }
       readExcel(file);
     }
 
-    // -----------------------------
-    // Input handlers
-    // -----------------------------
-    // wire file inputs (these are in module scope when DOM ready, so wire after DOM)
     window.addEventListener("DOMContentLoaded", () => {
-      const fileUpload = document.getElementById("fileUpload");
-      const folderUpload = document.getElementById("folderUpload");
-      if (fileUpload) fileUpload.addEventListener("change", e => {
+      document.getElementById("fileUpload")?.addEventListener("change", e => {
         const file = e.target.files[0];
         if (file) uploadFile(file);
       });
-      if (folderUpload) folderUpload.addEventListener("change", e => {
+      document.getElementById("folderUpload")?.addEventListener("change", e => {
         const files = Array.from(e.target.files || []);
-        const excelFiles = files.filter(f => f.name && (f.name.toLowerCase().endsWith(".xlsx") || f.name.toLowerCase().endsWith(".xls")));
+        const excelFiles = files.filter(f => f.name && (f.name.endsWith(".xlsx") || f.name.endsWith(".xls")));
         if (excelFiles.length > 0) uploadFile(excelFiles[0]);
       });
     });
 
-    // -----------------------------
-    // Submit physical quantity (update existing doc)
-    // -----------------------------
     async function handleSubmit() {
+      if (!data[currentIndex]) return alert("No item to submit.");
+      const entry = data[currentIndex];
+      const inputEl = document.getElementById("physicalQty");
+      const physicalQty = parseInt(inputEl.value);
+      if (isNaN(physicalQty)) return alert("Enter valid physical quantity.");
+
       try {
-        if (!data[currentIndex]) {
-          alert("No item to submit.");
-          return;
-        }
-        const entry = data[currentIndex];
-        const inputEl = document.getElementById("physicalQty");
-        const physicalQty = parseInt(inputEl?.value);
-        if (isNaN(physicalQty)) {
-          alert("Enter a valid physical quantity.");
-          return;
-        }
-
-        // query by date (string), location, sku
-        const q = query(
-          collection(db, "cycle_counts"),
-          where("date", "==", todayStr),
-          where("location", "==", entry.location),
-          where("sku", "==", entry.sku)
-        );
-        const snapshot = await getDocs(q);
-
-        if (snapshot.empty) {
-          console.warn("No matching doc to update for", entry);
-        } else {
-          const systemQty = parseInt(entry.system_quantity) || 0;
-          const variance = physicalQty - systemQty;
-          const updates = [];
-          snapshot.forEach(docSnap => {
-            const docRef = doc(db, "cycle_counts", docSnap.id);
-            updates.push(updateDoc(docRef, {
-              physical_quantity: physicalQty,
-              variance: variance
-            }));
-          });
-          await Promise.all(updates);
-        }
-
-        // move to next
-        if (inputEl) inputEl.value = "";
+        const docRef = doc(db, "cycle_counts", entry.id);
+        await updateDoc(docRef, {
+          physical_quantity: physicalQty,
+          variance: physicalQty - (parseInt(entry.system_quantity) || 0)
+        });
         currentIndex++;
+        inputEl.value = "";
         renderCurrent();
-        await fetchDates();
-      } catch (err) {
-        console.error("handleSubmit error:", err);
-        alert("Error updating record. See console.");
-      }
+      } catch (err) { console.error(err); alert("Error updating record."); }
     }
 
-    // -----------------------------
-    // Clear helpers
-    // -----------------------------
     async function handleClearDate(dateStr) {
       if (!confirm(`Clear all records for ${dateStr}?`)) return;
       try {
         const q = query(collection(db, "cycle_counts"), where("date", "==", dateStr));
         const snapshot = await getDocs(q);
-        const deletes = [];
-        snapshot.forEach(docSnap => deletes.push(deleteDoc(doc(db, "cycle_counts", docSnap.id))));
-        await Promise.all(deletes);
-        data = data.filter(r => r.date !== dateStr); // local best-effort
-        currentIndex = 0;
-        renderCurrent();
-        await fetchDates();
-        alert(`Cleared data for ${dateStr}.`);
-      } catch (err) {
-        console.error("handleClearDate error:", err);
-        alert("Error clearing date. See console.");
-      }
+        await Promise.all(snapshot.docs.map(d => deleteDoc(doc(db, "cycle_counts", d.id))));
+        alert(`Cleared data for ${dateStr}`);
+      } catch (err) { console.error(err); }
     }
 
     async function clearAllData() {
-      if (!confirm("⚠️ This will delete ALL cycle count data from Firebase. Continue?")) return;
+      if (!confirm("⚠️ Delete ALL data?")) return;
       try {
         const snapshot = await getDocs(collection(db, "cycle_counts"));
-        const deletes = [];
-        snapshot.forEach(docSnap => deletes.push(deleteDoc(doc(db, "cycle_counts", docSnap.id))));
-        await Promise.all(deletes);
-        // reset local state & UI
-        data = [];
-        currentIndex = 0;
-        renderCurrent();
-        await fetchDates();
-        alert("All cycle count data cleared.");
-      } catch (err) {
-        console.error("clearAllData error:", err);
-        alert("Error clearing all data. See console.");
-      }
+        await Promise.all(snapshot.docs.map(d => deleteDoc(doc(db, "cycle_counts", d.id))));
+        alert("All data cleared");
+      } catch (err) { console.error(err); }
     }
 
-    // -----------------------------
-    // Download All (Excel with CSV fallback)
-    // -----------------------------
     async function downloadAllData() {
       try {
         const snapshot = await getDocs(collection(db, "cycle_counts"));
-        const rows = [];
-        snapshot.forEach(docSnap => {
-          const d = docSnap.data();
-          rows.push({
-            date: toDateString(d.date),
-            location: d.location ?? "",
-            sku: d.sku ?? "",
-            system_quantity: d.system_quantity ?? "",
-            physical_quantity: d.physical_quantity ?? "",
-            variance: d.variance ?? ""
-          });
+        const rows = snapshot.docs.map(d => {
+          const dd = d.data();
+          return {
+            date: toDateString(dd.date),
+            location: dd.location ?? "",
+            sku: dd.sku ?? "",
+            system_quantity: dd.system_quantity ?? "",
+            physical_quantity: dd.physical_quantity ?? "",
+            variance: dd.variance ?? ""
+          };
         });
+        if (!rows.length) return alert("No data to download");
 
-        if (rows.length === 0) {
-          alert("No data available to download.");
-          return;
-        }
-
-        // create sheet + workbook
-        const ws = XLSX.utils.json_to_sheet(rows, { header: ["date","location","sku","system_quantity","physical_quantity","variance"] });
+        const ws = XLSX.utils.json_to_sheet(rows);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "CycleCounts");
-        try {
-          XLSX.writeFile(wb, `cycle_counts_all_${todayStr}.xlsx`);
-        } catch (writeErr) {
-          console.warn("XLSX.writeFile failed, falling back to CSV:", writeErr);
-          // fallback: CSV
-          const csv = XLSX.utils.sheet_to_csv(ws);
-          const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.setAttribute("download", `cycle_counts_all_${todayStr}.csv`);
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-      } catch (err) {
-        console.error("downloadAllData error:", err);
-        alert("Error downloading data. See console.");
-      }
+        XLSX.writeFile(wb, `cycle_counts_all_${todayStr}.xlsx`);
+      } catch (err) { console.error(err); alert("Download error."); }
     }
 
-    // -----------------------------
-    // Supervisor login & controls
-    // -----------------------------
     function requestSupervisor() {
-      const userId = prompt("Enter User ID:");
-      const pass = prompt("Enter Password:");
+      const userId = prompt("User ID:");
+      const pass = prompt("Password:");
       if (userId === "Invceva" && pass === "Ceva4567") {
         supervisorMode = true;
         document.getElementById("supervisorControls").classList.remove("d-none");
-        alert("✅ Supervisor access granted");
-      } else {
-        alert("❌ Invalid credentials");
-      }
+        alert("Supervisor access granted");
+      } else alert("Invalid credentials");
     }
 
     function setSystemDisplay(val) {
@@ -324,26 +213,23 @@
       renderCurrent();
     }
 
-    // -----------------------------
-    // Render current item
-    // -----------------------------
     function renderCurrent() {
       const container = document.getElementById("currentItem");
       container.innerHTML = "";
-      if (!data || data.length === 0 || currentIndex >= data.length) {
-        container.innerHTML = "<p class='text-success fw-bold'>✅ No items available. Upload a file to start.</p>";
+      if (!data || currentIndex >= data.length) {
+        container.innerHTML = "<p class='text-success fw-bold'>✅ No items available.</p>";
         return;
       }
       const entry = data[currentIndex];
       let html = `
         <h4 class="text-success">Current Item</h4>
         <p><strong>Date:</strong> ${todayStr}</p>
-        <p><strong>Location:</strong> ${entry.location || ""}</p>
-        <p><strong>SKU:</strong> ${entry.sku || ""}</p>
+        <p><strong>Location:</strong> ${entry.location}</p>
+        <p><strong>SKU:</strong> ${entry.sku}</p>
       `;
       if (showSystem) {
         html += `<p><strong>System Qty:</strong> ${entry.system_quantity ?? 0}</p>
-                 <p><strong>Variance:</strong> <span id="variance">-</span></p>`;
+                 <p><strong>Variance:</strong> <span id="variance">${entry.variance ?? "-"}</span></p>`;
       }
       html += `
         <input type="number" id="physicalQty" class="form-control mt-2" placeholder="Enter Physical Quantity">
@@ -351,20 +237,17 @@
       `;
       container.innerHTML = html;
 
-      // hook submit button (safe way)
       document.getElementById("submitBtn").addEventListener("click", handleSubmit);
 
-      // variance preview only when system visible
       if (showSystem) {
         const qtyInput = document.getElementById("physicalQty");
         qtyInput.addEventListener("input", () => {
-          const inputVal = parseInt(qtyInput.value);
-          const systemVal = parseInt(entry.system_quantity) || 0;
+          const val = parseInt(qtyInput.value);
           const varianceEl = document.getElementById("variance");
-          if (!isNaN(inputVal)) {
-            const variance = inputVal - systemVal;
-            varianceEl.textContent = variance;
-            varianceEl.style.color = variance < 0 ? "red" : "green";
+          if (!isNaN(val)) {
+            const v = val - (parseInt(entry.system_quantity) || 0);
+            varianceEl.textContent = v;
+            varianceEl.style.color = v < 0 ? "red" : "green";
           } else {
             varianceEl.textContent = "-";
             varianceEl.style.color = "black";
@@ -373,20 +256,18 @@
       }
     }
 
-    // -----------------------------
-    // Expose functions to window for inline onclicks
-    // -----------------------------
     window.requestSupervisor = requestSupervisor;
     window.setSystemDisplay = setSystemDisplay;
     window.clearAllData = clearAllData;
     window.downloadAllData = downloadAllData;
     window.handleSubmit = handleSubmit;
-    window.fetchDates = fetchDates;
-    window.renderCurrent = renderCurrent;
 
-    // initial load
+    // -----------------------------
+    // Initialize
+    // -----------------------------
     fetchDates();
-    // end module
+    setupLiveListener();
+
   </script>
 </head>
 <body class="bg-light p-4">
@@ -395,7 +276,6 @@
       Inventory Cycle Count
     </h2>
 
-    <!-- Upload Section -->
     <div class="card border-secondary mb-4">
       <div class="card-body">
         <label class="form-label fw-bold">Upload Excel File:</label>
@@ -406,16 +286,13 @@
       </div>
     </div>
 
-    <!-- Current Item Section -->
     <div id="currentItem" class="card border-success mb-4 p-3">
       <p class="text-muted">Upload a file to start counting.</p>
     </div>
 
-    <!-- Supervisor Options -->
     <div class="card border-dark mb-4 p-3">
       <h5>Supervisor Options</h5>
       <button class="btn btn-secondary" onclick="requestSupervisor()">🔑 Login as Supervisor</button>
-
       <div id="supervisorControls" class="mt-3 d-none">
         <button class="btn btn-warning me-2" onclick="setSystemDisplay(false)">Without System Qty</button>
         <button class="btn btn-success me-2" onclick="setSystemDisplay(true)">With System Qty</button>
@@ -424,7 +301,6 @@
       </div>
     </div>
 
-    <!-- Dates Section -->
     <div class="card border-info p-3">
       <h5>Available Dates</h5>
       <ul id="datesList" class="list-group mt-2"></ul>
