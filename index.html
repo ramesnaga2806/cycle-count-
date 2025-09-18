@@ -1,310 +1,433 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Inventory Cycle Count</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Bootstrap -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- XLSX -->
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+  <!-- XLSX Library -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <!-- Firebase (modular) -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-    import {
-      getFirestore, collection, addDoc, getDocs, query, where, doc, updateDoc, deleteDoc, onSnapshot
-    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-
-    const firebaseConfig = {
-      apiKey: "AIzaSyDBWFj82I9Rt1ZJygVZZahIdOOoETYteCc",
-      authDomain: "cycle-count-a5f0d.firebaseapp.com",
-      projectId: "cycle-count-a5f0d",
-      storageBucket: "cycle-count-a5f0d.appspot.com",
-      messagingSenderId: "986508290354",
-      appId: "1:986508290354:web:d6cbd6e797cdbbb0968f2b",
-    };
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-
-    let data = [];
-    let currentIndex = 0;
-    let showSystem = true;
-    let supervisorMode = false;
-    const todayStr = new Date().toISOString().split("T")[0];
-
-    // -----------------------------
-    // Firestore live listener for multi-user
-    // -----------------------------
-    function setupLiveListener() {
-      const q = query(collection(db, "cycle_counts"), where("date", "==", todayStr));
-      onSnapshot(q, snapshot => {
-        data = [];
-        snapshot.forEach(docSnap => {
-          const d = docSnap.data();
-          d.id = docSnap.id;
-          data.push(d);
-        });
-        renderCurrent();
-        fetchDates();
-      });
-    }
-
-    function toDateString(value) {
-      try {
-        if (!value) return "";
-        if (value.toDate && typeof value.toDate === "function") return value.toDate().toISOString().split("T")[0];
-        return String(value);
-      } catch { return String(value); }
-    }
-
-    async function fetchDates() {
-      try {
-        const snapshot = await getDocs(collection(db, "cycle_counts"));
-        const dates = new Set();
-        snapshot.forEach(docSnap => {
-          const ds = toDateString(docSnap.data().date);
-          if (ds) dates.add(ds);
-        });
-        const list = document.getElementById("datesList");
-        list.innerHTML = "";
-        [...dates].sort().forEach(date => {
-          const li = document.createElement("li");
-          li.className = "list-group-item d-flex justify-content-between align-items-center";
-          li.textContent = date;
-          if (supervisorMode) {
-            const btn = document.createElement("button");
-            btn.className = "btn btn-sm btn-danger ms-2";
-            btn.textContent = "Clear";
-            btn.onclick = () => handleClearDate(date);
-            li.appendChild(btn);
-          }
-          list.appendChild(li);
-        });
-      } catch (err) { console.error(err); }
-    }
-
-    async function readExcel(file) {
-      document.getElementById("fileName").textContent = "Selected File: " + file.name;
-      const reader = new FileReader();
-      reader.onload = async (evt) => {
-        try {
-          const wb = XLSX.read(evt.target.result, { type: "array" });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(ws, { header: ["location", "sku", "system_quantity"], range: 1 })
-                          .filter(r => r.location || r.sku);
-          for (const entry of rows) {
-            await addDoc(collection(db, "cycle_counts"), {
-              date: todayStr,
-              location: entry.location || "",
-              sku: entry.sku || "",
-              system_quantity: parseInt(entry.system_quantity) || 0,
-              physical_quantity: null,
-              variance: null
-            });
-          }
-          alert("File uploaded and records added.");
-        } catch (err) {
-          console.error(err);
-          alert("Error reading Excel.");
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    }
-
-    async function uploadFile(file) {
-      readExcel(file);
-    }
-
-    window.addEventListener("DOMContentLoaded", () => {
-      document.getElementById("fileUpload")?.addEventListener("change", e => {
-        const file = e.target.files[0];
-        if (file) uploadFile(file);
-      });
-      document.getElementById("folderUpload")?.addEventListener("change", e => {
-        const files = Array.from(e.target.files || []);
-        const excelFiles = files.filter(f => f.name && (f.name.endsWith(".xlsx") || f.name.endsWith(".xls")));
-        if (excelFiles.length > 0) uploadFile(excelFiles[0]);
-      });
-    });
-
-    async function handleSubmit() {
-      if (!data[currentIndex]) return alert("No item to submit.");
-      const entry = data[currentIndex];
-      const inputEl = document.getElementById("physicalQty");
-      const physicalQty = parseInt(inputEl.value);
-      if (isNaN(physicalQty)) return alert("Enter valid physical quantity.");
-
-      try {
-        const docRef = doc(db, "cycle_counts", entry.id);
-        await updateDoc(docRef, {
-          physical_quantity: physicalQty,
-          variance: physicalQty - (parseInt(entry.system_quantity) || 0)
-        });
-        currentIndex++;
-        inputEl.value = "";
-        renderCurrent();
-      } catch (err) { console.error(err); alert("Error updating record."); }
-    }
-
-    async function handleClearDate(dateStr) {
-      if (!confirm(`Clear all records for ${dateStr}?`)) return;
-      try {
-        const q = query(collection(db, "cycle_counts"), where("date", "==", dateStr));
-        const snapshot = await getDocs(q);
-        await Promise.all(snapshot.docs.map(d => deleteDoc(doc(db, "cycle_counts", d.id))));
-        alert(`Cleared data for ${dateStr}`);
-      } catch (err) { console.error(err); }
-    }
-
-    async function clearAllData() {
-      if (!confirm("⚠️ Delete ALL data?")) return;
-      try {
-        const snapshot = await getDocs(collection(db, "cycle_counts"));
-        await Promise.all(snapshot.docs.map(d => deleteDoc(doc(db, "cycle_counts", d.id))));
-        alert("All data cleared");
-      } catch (err) { console.error(err); }
-    }
-
-    async function downloadAllData() {
-      try {
-        const snapshot = await getDocs(collection(db, "cycle_counts"));
-        const rows = snapshot.docs.map(d => {
-          const dd = d.data();
-          return {
-            date: toDateString(dd.date),
-            location: dd.location ?? "",
-            sku: dd.sku ?? "",
-            system_quantity: dd.system_quantity ?? "",
-            physical_quantity: dd.physical_quantity ?? "",
-            variance: dd.variance ?? ""
-          };
-        });
-        if (!rows.length) return alert("No data to download");
-
-        const ws = XLSX.utils.json_to_sheet(rows);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "CycleCounts");
-        XLSX.writeFile(wb, `cycle_counts_all_${todayStr}.xlsx`);
-      } catch (err) { console.error(err); alert("Download error."); }
-    }
-
-    function requestSupervisor() {
-      const userId = prompt("User ID:");
-      const pass = prompt("Password:");
-      if (userId === "Invceva" && pass === "Ceva4567") {
-        supervisorMode = true;
-        document.getElementById("supervisorControls").classList.remove("d-none");
-        document.getElementById("logoutSupervisor").classList.remove("d-none");
-        alert("Supervisor access granted");
-      } else alert("Invalid credentials");
-    }
-
-    function logoutSupervisor() {
-      supervisorMode = false;
-      document.getElementById("supervisorControls").classList.add("d-none");
-      document.getElementById("logoutSupervisor").classList.add("d-none");
-      alert("Supervisor logged out");
-    }
-
-    function setSystemDisplay(val) {
-      showSystem = !!val;
-      renderCurrent();
-    }
-
-    function renderCurrent() {
-      const container = document.getElementById("currentItem");
-      container.innerHTML = "";
-      if (!data || currentIndex >= data.length) {
-        container.innerHTML = "<p class='text-success fw-bold'>✅ No items available.</p>";
-        return;
-      }
-      const entry = data[currentIndex];
-      let html = `
-        <h4 class="text-success">Current Item</h4>
-        <p><strong>Date:</strong> ${todayStr}</p>
-        <p><strong>Location:</strong> ${entry.location}</p>
-        <p><strong>SKU:</strong> ${entry.sku}</p>
-      `;
-      if (showSystem) {
-        html += `<p><strong>System Qty:</strong> ${entry.system_quantity ?? 0}</p>
-                 <p><strong>Variance:</strong> <span id="variance">${entry.variance ?? "-"}</span></p>`;
-      }
-      html += `
-        <input type="number" id="physicalQty" class="form-control mt-2" placeholder="Enter Physical Quantity">
-        <button class="btn btn-primary mt-3" id="submitBtn">Submit & Next</button>
-      `;
-      container.innerHTML = html;
-
-      document.getElementById("submitBtn").addEventListener("click", handleSubmit);
-
-      if (showSystem) {
-        const qtyInput = document.getElementById("physicalQty");
-        qtyInput.addEventListener("input", () => {
-          const val = parseInt(qtyInput.value);
-          const varianceEl = document.getElementById("variance");
-          if (!isNaN(val)) {
-            const v = val - (parseInt(entry.system_quantity) || 0);
-            varianceEl.textContent = v;
-            varianceEl.style.color = v < 0 ? "red" : "green";
-          } else {
-            varianceEl.textContent = "-";
-            varianceEl.style.color = "black";
-          }
-        });
-      }
-    }
-
-    window.requestSupervisor = requestSupervisor;
-    window.logoutSupervisor = logoutSupervisor;
-    window.setSystemDisplay = setSystemDisplay;
-    window.clearAllData = clearAllData;
-    window.downloadAllData = downloadAllData;
-    window.handleSubmit = handleSubmit;
-
-    // -----------------------------
-    // Initialize
-    // -----------------------------
-    fetchDates();
-    setupLiveListener();
-
-  </script>
 </head>
-<body class="bg-light p-4">
+<body class="p-3">
   <div class="container">
-    <h2 class="text-center text-primary border-bottom border-3 border-primary pb-2 mb-4">
-      Inventory Cycle Count
-    </h2>
+    <h2 class="mb-4">📦 Inventory Cycle Count</h2>
 
+    <!-- Upload Block -->
     <div class="card border-secondary mb-4">
       <div class="card-body">
-        <label class="form-label fw-bold">Upload Excel File:</label>
-        <input type="file" id="fileUpload" class="form-control" accept=".xlsx,.xls">
+        <label class="form-label fw-bold">Upload Excel / CSV File</label>
+        <input type="file" id="fileUpload" class="form-control" accept=".xlsx,.xls,.csv">
         <label class="form-label fw-bold mt-3">Upload Folder (Computer only):</label>
         <input type="file" id="folderUpload" class="form-control" webkitdirectory directory multiple>
         <p id="fileName" class="mt-2 text-muted"></p>
       </div>
     </div>
 
+    <!-- Current Item -->
     <div id="currentItem" class="card border-success mb-4 p-3">
-      <p class="text-muted">Upload a file to start counting.</p>
+      <p class="text-muted">Upload a file, set user name & ID, and select a zone to start counting.</p>
     </div>
 
+    <!-- Supervisor Options -->
     <div class="card border-dark mb-4 p-3">
       <h5>Supervisor Options</h5>
-      <button class="btn btn-secondary" onclick="requestSupervisor()">🔑 Login as Supervisor</button>
-      <button class="btn btn-danger d-none" id="logoutSupervisor" onclick="logoutSupervisor()">🔓 Logout Supervisor</button>
+      <button class="btn btn-secondary" id="loginSupervisorBtn">🔑 Login as Supervisor</button>
+      <button class="btn btn-danger d-none" id="logoutSupervisor" >🔓 Logout Supervisor</button>
       <div id="supervisorControls" class="mt-3 d-none">
-        <button class="btn btn-warning me-2" onclick="setSystemDisplay(false)">Without System Qty</button>
-        <button class="btn btn-success me-2" onclick="setSystemDisplay(true)">With System Qty</button>
-        <button class="btn btn-danger me-2" onclick="clearAllData()">All Clear</button>
-        <button class="btn btn-info" onclick="downloadAllData()">⬇️ Download All Data</button>
+        <button class="btn btn-warning me-2" id="btnWithoutSystem">Without System Qty</button>
+        <button class="btn btn-success me-2" id="btnWithSystem">With System Qty</button>
+        <button class="btn btn-danger me-2" id="btnAllClear">All Clear</button>
+        <button class="btn btn-info me-2" id="btnDownloadAll">⬇️ Download All Data</button>
       </div>
     </div>
 
-    <div class="card border-info p-3">
+    <!-- Available Dates -->
+    <div class="card border-info p-3 mb-4">
       <h5>Available Dates</h5>
       <ul id="datesList" class="list-group mt-2"></ul>
     </div>
+
+    <!-- User Login -->
+    <div class="card border-primary p-3 mb-4">
+      <h5>User Login</h5>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <input id="userName" class="form-control" placeholder="Enter username">
+        </div>
+        <div class="col-md-3">
+          <input id="userId" class="form-control" placeholder="Enter user ID">
+        </div>
+        <div class="col-md-3">
+          <select id="zoneSelect" class="form-select">
+            <option value="">-- Select Zone --</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <button class="btn btn-primary w-100" id="setUserBtn">Set User</button>
+        </div>
+      </div>
+      <div id="countControls" class="mt-3">
+        Counting as: <strong id="userInfoLabel">Not set</strong>
+      </div>
+    </div>
   </div>
+
+  <!-- Firebase & App Logic (module placed at bottom so DOM elements exist) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getFirestore, collection, addDoc, serverTimestamp, query, getDocs,
+      where, deleteDoc, updateDoc, doc
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    // CONFIG - same as yours
+    const firebaseConfig = {
+      apiKey: "AIzaSyDBWFj82I9Rt1ZJygVZZahIdOOoETYteCc",
+      authDomain: "cycle-count-a5f0d.firebaseapp.com",
+      projectId: "cycle-count-a5f0d",
+      storageBucket: "cycle-count-a5f0d.appspot.com",
+      messagingSenderId: "986508290354",
+      appId: "1:986508290354:web:d6cbd6e797cdbbb0968f2b"
+    };
+
+    // init
+    let db;
+    try {
+      const app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      console.log("Firebase initialized");
+    } catch (err) {
+      console.error("Firebase init failed:", err);
+      alert("Failed to initialize Firebase. See console.");
+    }
+
+    // App state
+    let currentUser = { name: "", id: "" };
+    let showSystemQty = true;
+
+    // DOM references (now that DOM is parsed)
+    const fileUpload = document.getElementById("fileUpload");
+    const folderUpload = document.getElementById("folderUpload");
+    const fileName = document.getElementById("fileName");
+    const zoneSelect = document.getElementById("zoneSelect");
+    const userNameInput = document.getElementById("userName");
+    const userIdInput = document.getElementById("userId");
+    const setUserBtn = document.getElementById("setUserBtn");
+    const userInfoLabel = document.getElementById("userInfoLabel");
+    const supervisorControls = document.getElementById("supervisorControls");
+    const logoutSupervisorBtn = document.getElementById("logoutSupervisor");
+    const datesList = document.getElementById("datesList");
+    const currentItem = document.getElementById("currentItem");
+
+    const loginSupervisorBtn = document.getElementById("loginSupervisorBtn");
+    const btnWithoutSystem = document.getElementById("btnWithoutSystem");
+    const btnWithSystem = document.getElementById("btnWithSystem");
+    const btnAllClear = document.getElementById("btnAllClear");
+    const btnDownloadAll = document.getElementById("btnDownloadAll");
+
+    // Attach event listeners
+    fileUpload.addEventListener("change", handleFile, false);
+    folderUpload.addEventListener("change", handleFile, false);
+    setUserBtn.addEventListener("click", onSetUser);
+    zoneSelect.addEventListener("change", onZoneChange);
+
+    loginSupervisorBtn.addEventListener("click", requestSupervisor);
+    logoutSupervisorBtn.addEventListener("click", logoutSupervisor);
+    btnWithoutSystem.addEventListener("click", () => setSystemDisplay(false));
+    btnWithSystem.addEventListener("click", () => setSystemDisplay(true));
+    btnAllClear.addEventListener("click", clearAllData);
+    btnDownloadAll.addEventListener("click", downloadAllData);
+
+    // FILE UPLOAD -> save to Firestore
+    async function handleFile(e) {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      fileName.textContent = "Uploaded: " + file.name;
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const data = new Uint8Array(buffer);
+        const workbook = XLSX.read(data, { type: "array" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+        if (!rows.length) {
+          alert("No data found in file.");
+          return;
+        }
+
+        const today = new Date().toISOString().split("T")[0];
+        const zonesSeen = new Set();
+
+        // Upload sequentially (avoid rate-limit issues). If you have thousands of rows, we can use batch/smart concurrency.
+        for (const r of rows) {
+          // Accept common header names (lowercase in your original file)
+          const location = r.location ?? r.Location ?? r.LocationName ?? "";
+          const sku = r.sku ?? r.SKU ?? "";
+          if (!location || !sku) continue;
+
+          const system_quantity = Number(r.system_quantity ?? r.SystemQty ?? r.system ?? 0) || 0;
+          const zoneVal = (r.zone ?? r.Zone ?? "") + "";
+          zonesSeen.add(zoneVal);
+
+          await addDoc(collection(db, "cycleCounts"), {
+            location,
+            sku,
+            system_quantity,
+            zone: zoneVal,
+            batch: r.batch ?? "",
+            remark: "",
+            counted: false,
+            counted_quantity: 0,
+            userName: "",
+            userId: "",
+            date: today,
+            timestamp: serverTimestamp()
+          });
+        }
+
+        // Refresh UI lists
+        await updateZonesFromDB();
+        await updateDatesList();
+
+        alert("File uploaded and saved to Firebase!");
+        // If user & zone already selected, try to load next item
+        if (currentUser.name && currentUser.id && zoneSelect.value) {
+          loadNextItem();
+        }
+      } catch (err) {
+        console.error("Upload error:", err);
+        alert("Upload failed. See console for details.");
+      }
+    }
+
+    // Set User
+    function onSetUser() {
+      const name = (userNameInput.value || "").trim();
+      const id = (userIdInput.value || "").trim();
+      if (!name || !id) {
+        alert("Please enter both username and user ID.");
+        return;
+      }
+      currentUser = { name, id };
+      userInfoLabel.textContent = `${name} (${id})`;
+      alert(`User set: ${name} (${id})`);
+      if (zoneSelect.value) loadNextItem();
+    }
+
+    function onZoneChange() {
+      if (currentUser.name && currentUser.id && zoneSelect.value) {
+        loadNextItem();
+      } else {
+        // show message inside currentItem
+        currentItem.innerHTML = `<p class="text-muted">Select a zone and set user to start counting.</p>`;
+      }
+    }
+
+    // Load the next uncounted item for the selected zone (client-side sort to avoid index errors)
+    async function loadNextItem() {
+      if (!db) { currentItem.innerHTML = `<p class="text-danger">No database connection.</p>`; return; }
+      if (!currentUser.name || !currentUser.id || !zoneSelect.value) {
+        currentItem.innerHTML = `<p class="text-muted">Upload a file, set user name & ID, and select a zone to start counting.</p>`;
+        return;
+      }
+
+      try {
+        const q = query(collection(db, "cycleCounts"), where("zone", "==", zoneSelect.value), where("counted", "==", false));
+        const snap = await getDocs(q);
+
+        if (snap.empty) {
+          currentItem.innerHTML = `<p class="text-success">No uncounted items in zone ${zoneSelect.value}.</p>`;
+          return;
+        }
+
+        // Sort by timestamp client side (robust against missing index)
+        const docsSorted = Array.from(snap.docs).sort((a, b) => {
+          const ta = a.data().timestamp?.toMillis?.() ?? a.data().timestamp?.seconds ? a.data().timestamp.seconds * 1000 : 0;
+          const tb = b.data().timestamp?.toMillis?.() ?? b.data().timestamp?.seconds ? b.data().timestamp.seconds * 1000 : 0;
+          return ta - tb;
+        });
+
+        const nextSnap = docsSorted[0];
+        const item = nextSnap.data();
+        const docId = nextSnap.id;
+
+        currentItem.innerHTML = `
+          <h5>Current Item</h5>
+          <p><strong>Location:</strong> ${escapeHtml(item.location)}</p>
+          <p><strong>SKU:</strong> ${escapeHtml(item.sku)}</p>
+          ${showSystemQty ? `<p><strong>System Quantity:</strong> ${item.system_quantity}</p>` : ""}
+          <p><strong>Batch:</strong> ${escapeHtml(item.batch || "N/A")}</p>
+          <div class="mb-3">
+            <label for="countedQty" class="form-label">Physical Count:</label>
+            <input type="number" id="countedQty" class="form-control" min="0" placeholder="Enter physical count">
+          </div>
+          <div class="mb-3">
+            <label for="remark" class="form-label">Remark (optional):</label>
+            <input type="text" id="remark" class="form-control" placeholder="Enter remark">
+          </div>
+          <button class="btn btn-primary" id="submitCountBtn">Submit Count</button>
+        `;
+
+        // attach submit handler (closure captures docId)
+        document.getElementById("submitCountBtn").addEventListener("click", () => submitCount(docId));
+      } catch (err) {
+        console.error("Error loading next item:", err);
+        currentItem.innerHTML = `<p class="text-danger">Error loading item. See console for details.</p>`;
+      }
+    }
+
+    // Submit physical count for a document
+    async function submitCount(docId) {
+      const countedQtyInput = document.getElementById("countedQty");
+      const remarkInput = document.getElementById("remark");
+      if (!countedQtyInput) { alert("Input missing"); return; }
+
+      const countedQty = Number(countedQtyInput.value);
+      if (!Number.isFinite(countedQty) || countedQty < 0) {
+        alert("Please enter a valid physical count (0 or more).");
+        return;
+      }
+
+      try {
+        const docRef = doc(db, "cycleCounts", docId);
+        await updateDoc(docRef, {
+          counted: true,
+          counted_quantity: countedQty,
+          userName: currentUser.name,
+          userId: currentUser.id,
+          remark: (remarkInput?.value || "").trim(),
+          counted_at: serverTimestamp()
+        });
+
+        alert("Physical count submitted successfully!");
+        // Refresh: load next item and update dates/zones if needed
+        await updateDatesList();
+        await loadNextItem();
+      } catch (err) {
+        console.error("Error submitting count:", err);
+        alert("Failed to submit count. See console for details.");
+      }
+    }
+
+    // Supervisor functions
+    function requestSupervisor() {
+      const password = prompt("Enter supervisor password:");
+      if (password === "admin123") {
+        supervisorControls.classList.remove("d-none");
+        logoutSupervisorBtn.classList.remove("d-none");
+        alert("Logged in as Supervisor");
+      } else {
+        alert("Invalid password");
+      }
+    }
+
+    function logoutSupervisor() {
+      supervisorControls.classList.add("d-none");
+      logoutSupervisorBtn.classList.add("d-none");
+      alert("Logged out from Supervisor mode");
+    }
+
+    function setSystemDisplay(show) {
+      showSystemQty = !!show;
+      alert(`System quantity display set to: ${show ? "Show" : "Hide"}`);
+      // refresh current item view if present
+      if (currentUser.name && currentUser.id && zoneSelect.value) loadNextItem();
+    }
+
+    // Clear all data (destructive)
+    async function clearAllData() {
+      if (!confirm("Are you sure you want to clear all data? This cannot be undone.")) return;
+      try {
+        const allSnap = await getDocs(query(collection(db, "cycleCounts")));
+        for (const s of allSnap.docs) {
+          // sequential deletion to be friendly on quotas
+          await deleteDoc(doc(db, "cycleCounts", s.id));
+        }
+        alert("All data cleared!");
+        await updateDatesList();
+        await updateZonesFromDB();
+        currentItem.innerHTML = `<p class="text-muted">Upload a file, set user name & ID, and select a zone to start counting.</p>`;
+      } catch (err) {
+        console.error("Clear data error:", err);
+        alert("Failed to clear data. See console for details.");
+      }
+    }
+
+    // Download all data as Excel
+    async function downloadAllData() {
+      try {
+        const allSnap = await getDocs(query(collection(db, "cycleCounts")));
+        const arr = allSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const ws = XLSX.utils.json_to_sheet(arr);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "CycleCounts");
+        XLSX.writeFile(wb, `CycleCounts_${new Date().toISOString().split("T")[0]}.xlsx`);
+        alert("Data downloaded as Excel.");
+      } catch (err) {
+        console.error("Download error:", err);
+        alert("Failed to download data. See console.");
+      }
+    }
+
+    // Update the list of available dates shown in the UI
+    async function updateDatesList() {
+      try {
+        const snap = await getDocs(query(collection(db, "cycleCounts")));
+        const dates = new Set();
+        snap.forEach(s => { const d = s.data().date; if (d) dates.add(d); });
+
+        datesList.innerHTML = "";
+        Array.from(dates).sort().forEach(date => {
+          const li = document.createElement("li");
+          li.className = "list-group-item";
+          li.textContent = date;
+          datesList.appendChild(li);
+        });
+      } catch (err) {
+        console.error("Error fetching dates:", err);
+        datesList.innerHTML = `<li class="list-group-item text-danger">Error loading dates</li>`;
+      }
+    }
+
+    // Update zone dropdown by reading distinct zones from Firestore
+    async function updateZonesFromDB() {
+      try {
+        const snap = await getDocs(query(collection(db, "cycleCounts")));
+        const zones = new Set();
+        snap.forEach(s => zones.add(s.data().zone ?? ""));
+        // Keep the blank option first
+        zoneSelect.innerHTML = `<option value="">-- Select Zone --</option>`;
+        Array.from(zones).filter(z => z !== "").sort().forEach(z => {
+          const opt = document.createElement("option");
+          opt.value = z;
+          opt.textContent = z;
+          zoneSelect.appendChild(opt);
+        });
+      } catch (err) {
+        console.error("Error populating zones:", err);
+      }
+    }
+
+    // Escape helper for safe text injection
+    function escapeHtml(str) {
+      if (typeof str !== "string") return str ?? "";
+      return str.replace(/[&<>"'`=\/]/g, s => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;","`":"&#96;","/":"&#47;","=":"&#61;"
+      })[s]);
+    }
+
+    // Initialize UI on page load
+    (async function init() {
+      if (!db) return;
+      await updateZonesFromDB();
+      await updateDatesList();
+    })();
+
+  </script>
+
+  <!-- Bootstrap JS (optional) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
 </body>
 </html>
