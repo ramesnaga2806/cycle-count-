@@ -12,9 +12,8 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
     import {
-      getFirestore, collection, addDoc, getDocs, query, where, deleteDoc, doc, updateDoc, onSnapshot
+      getFirestore, collection, addDoc, getDocs, query, where, doc, updateDoc, deleteDoc, onSnapshot
     } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-    import { getStorage, ref, uploadBytes } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyDBWFj82I9Rt1ZJygVZZahIdOOoETYteCc",
@@ -26,7 +25,6 @@
     };
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
-    const storage = getStorage(app);
 
     let data = [];
     let currentIndex = 0;
@@ -35,7 +33,7 @@
     const todayStr = new Date().toISOString().split("T")[0];
 
     // -----------------------------
-    // Firestore live listener
+    // Firestore live listener for multi-user
     // -----------------------------
     function setupLiveListener() {
       const q = query(collection(db, "cycle_counts"), where("date", "==", todayStr));
@@ -92,11 +90,8 @@
         try {
           const wb = XLSX.read(evt.target.result, { type: "array" });
           const ws = wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(ws, {
-            header: ["location", "sku", "system_quantity"],
-            range: 1,
-          }).filter(r => r.location || r.sku);
-
+          const rows = XLSX.utils.sheet_to_json(ws, { header: ["location", "sku", "system_quantity"], range: 1 })
+                          .filter(r => r.location || r.sku);
           for (const entry of rows) {
             await addDoc(collection(db, "cycle_counts"), {
               date: todayStr,
@@ -117,11 +112,6 @@
     }
 
     async function uploadFile(file) {
-      try {
-        const storageRef = ref(storage, "uploads/" + file.name);
-        await uploadBytes(storageRef, file);
-        console.log("File uploaded to Storage");
-      } catch (e) { console.warn("Storage upload failed:", e); }
       readExcel(file);
     }
 
@@ -204,8 +194,16 @@
       if (userId === "Invceva" && pass === "Ceva4567") {
         supervisorMode = true;
         document.getElementById("supervisorControls").classList.remove("d-none");
+        document.getElementById("logoutSupervisor").classList.remove("d-none");
         alert("Supervisor access granted");
       } else alert("Invalid credentials");
+    }
+
+    function logoutSupervisor() {
+      supervisorMode = false;
+      document.getElementById("supervisorControls").classList.add("d-none");
+      document.getElementById("logoutSupervisor").classList.add("d-none");
+      alert("Supervisor logged out");
     }
 
     function setSystemDisplay(val) {
@@ -257,6 +255,7 @@
     }
 
     window.requestSupervisor = requestSupervisor;
+    window.logoutSupervisor = logoutSupervisor;
     window.setSystemDisplay = setSystemDisplay;
     window.clearAllData = clearAllData;
     window.downloadAllData = downloadAllData;
@@ -293,6 +292,7 @@
     <div class="card border-dark mb-4 p-3">
       <h5>Supervisor Options</h5>
       <button class="btn btn-secondary" onclick="requestSupervisor()">🔑 Login as Supervisor</button>
+      <button class="btn btn-danger d-none" id="logoutSupervisor" onclick="logoutSupervisor()">🔓 Logout Supervisor</button>
       <div id="supervisorControls" class="mt-3 d-none">
         <button class="btn btn-warning me-2" onclick="setSystemDisplay(false)">Without System Qty</button>
         <button class="btn btn-success me-2" onclick="setSystemDisplay(true)">With System Qty</button>
